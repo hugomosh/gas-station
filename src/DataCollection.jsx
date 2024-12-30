@@ -1,6 +1,7 @@
 // GasStationForm.jsx
 import React, { useState, useEffect } from "react";
 import { Download, Upload, Wifi, WifiOff } from "lucide-react";
+import { supabase } from "./lib/supabase";
 
 export default function GasStationForm() {
   // Main state for both stations
@@ -27,6 +28,53 @@ export default function GasStationForm() {
   const [entries, setEntries] = useState([]);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [unsyncedCount, setUnsyncedCount] = useState(0);
+
+  // Add sync function
+  const syncEntries = async () => {
+    try {
+      const unsyncedEntries = JSON.parse(localStorage.getItem("unsyncedEntries") || "[]");
+
+      if (unsyncedEntries.length === 0) return;
+
+      // Format entries for Supabase
+      const formattedEntries = unsyncedEntries.map((entry) => ({
+        timestamp: entry.timestamp,
+        duration: entry.duration,
+        fuel_door_position: entry.fuelDoorPosition,
+        pump_side: entry.pumpSide,
+        notes: entry.notes,
+        is_match: entry.isMatch,
+      }));
+
+      // Insert entries into Supabase
+      const { data, error } = await supabase.from("gas_station_entries").insert(formattedEntries);
+
+      if (error) throw error;
+
+      // Update synced status in local storage
+      const allEntries = JSON.parse(localStorage.getItem("gasStationEntries") || "[]");
+      const updatedEntries = allEntries.map((entry) => ({
+        ...entry,
+        synced: true,
+      }));
+
+      localStorage.setItem("gasStationEntries", JSON.stringify(updatedEntries));
+      localStorage.setItem("unsyncedEntries", "[]");
+
+      // Update state
+      setEntries(updatedEntries);
+      setUnsyncedCount(0);
+    } catch (error) {
+      console.error("Sync error:", error);
+    }
+  };
+
+  // Auto-sync when online
+  useEffect(() => {
+    if (isOnline && unsyncedCount > 0) {
+      syncEntries();
+    }
+  }, [isOnline]);
 
   // Load saved entries and set up online status listeners
   useEffect(() => {
@@ -313,6 +361,14 @@ export default function GasStationForm() {
           <div className="flex items-center space-x-2">
             {isOnline ? <Wifi className="text-green-500" /> : <WifiOff className="text-red-500" />}
             <span className="text-sm">{unsyncedCount} unsynced entries</span>
+            {isOnline && unsyncedCount > 0 && (
+              <button
+                onClick={syncEntries}
+                className="text-sm bg-blue-500 text-white px-2 py-1 rounded hover:bg-blue-600"
+              >
+                Sync Now
+              </button>
+            )}
           </div>
           <button
             onClick={exportData}
