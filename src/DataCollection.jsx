@@ -28,6 +28,11 @@ export default function GasStationForm() {
   const [entries, setEntries] = useState([]);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [unsyncedCount, setUnsyncedCount] = useState(0);
+  const [location, setLocation] = useState({
+    latitude: null,
+    longitude: null,
+    error: null,
+  });
 
   // Add sync function
   const syncEntries = async () => {
@@ -44,6 +49,10 @@ export default function GasStationForm() {
         pump_side: entry.pumpSide,
         notes: entry.notes,
         is_match: entry.isMatch,
+        // Format location as PostGIS point if available
+        ...(entry.location && {
+          location: `POINT(${entry.location.longitude} ${entry.location.latitude})`,
+        }),
       }));
 
       // Insert entries into Supabase
@@ -68,6 +77,35 @@ export default function GasStationForm() {
       console.error("Sync error:", error);
     }
   };
+
+  // Add useEffect for GPS tracking
+  useEffect(() => {
+    if (!navigator.geolocation) {
+      setLocation((prev) => ({ ...prev, error: "Geolocation is not supported" }));
+      return;
+    }
+
+    const success = (position) => {
+      setLocation({
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude,
+        error: null,
+      });
+    };
+
+    const error = (error) => {
+      setLocation((prev) => ({ ...prev, error: error.message }));
+    };
+
+    // Get initial position
+    navigator.geolocation.getCurrentPosition(success, error);
+
+    // Watch position
+    const watchId = navigator.geolocation.watchPosition(success, error);
+
+    // Cleanup
+    return () => navigator.geolocation.clearWatch(watchId);
+  }, []);
 
   // Auto-sync when online
   useEffect(() => {
@@ -165,6 +203,12 @@ export default function GasStationForm() {
         pumpSide: stationData.pumpSide,
         notes: stationData.notes,
         isMatch: stationData.fuelDoorPosition === stationData.pumpSide,
+        location: location.error
+          ? null
+          : {
+              latitude: location.latitude,
+              longitude: location.longitude,
+            },
         synced: false,
       };
 
@@ -366,28 +410,41 @@ export default function GasStationForm() {
       </div>
 
       {/* Status Bar */}
-      <div className="bg-white shadow rounded-lg p-4">
-        <div className="flex justify-between items-center">
+      {/* Add this to your Status Bar */}
+      <div className="flex justify-between items-center">
+        <div className="flex items-center space-x-4">
+          {/* Existing online status */}
           <div className="flex items-center space-x-2">
             {isOnline ? <Wifi className="text-green-500" /> : <WifiOff className="text-red-500" />}
             <span className="text-sm">{unsyncedCount} unsynced entries</span>
-            {isOnline && unsyncedCount > 0 && (
-              <button
-                onClick={syncEntries}
-                className="text-sm bg-blue-500 text-white px-2 py-1 rounded hover:bg-blue-600"
-              >
-                Sync Now
-              </button>
+          </div>
+
+          {/* Location status */}
+          <div className="flex items-center space-x-2">
+            {location.error ? (
+              <div className="flex items-center text-red-500">
+                <span className="text-sm">📍 Location unavailable</span>
+              </div>
+            ) : location.latitude ? (
+              <div className="flex items-center text-green-500">
+                <span className="text-sm">📍 Location active</span>
+              </div>
+            ) : (
+              <div className="flex items-center text-yellow-500">
+                <span className="text-sm">📍 Getting location...</span>
+              </div>
             )}
           </div>
-          <button
-            onClick={exportData}
-            className="flex items-center space-x-1 bg-gray-100 hover:bg-gray-200 px-3 py-1 rounded"
-          >
-            <Download className="w-4 h-4" />
-            <span>Export Data</span>
-          </button>
         </div>
+
+        {/* Export button */}
+        <button
+          onClick={exportData}
+          className="flex items-center space-x-1 bg-gray-100 hover:bg-gray-200 px-3 py-1 rounded"
+        >
+          <Download className="w-4 h-4" />
+          <span>Export Data</span>
+        </button>
       </div>
 
       {/* Station Timers */}
