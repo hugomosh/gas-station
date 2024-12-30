@@ -6,8 +6,6 @@ import Dashboard from "./Dashboard";
 function Nav() {
   const location = useLocation();
 
-  console.log({ location });
-
   // Don't show nav on the main form page
   if (
     location.pathname === "/gas-station" ||
@@ -40,6 +38,7 @@ function App() {
     <BrowserRouter basename="/gas-station">
       <Nav />
       <Routes>
+        <Route path="" element={<GasStationForm />} />
         <Route path="/" element={<GasStationForm />} />
         <Route path="/dashboard" element={<Dashboard />} />
       </Routes>
