@@ -152,7 +152,7 @@ export default function GasStationForm() {
   };
 
   // Save entry function
-  const saveEntry = (station) => {
+  const saveEntry = async (station) => {
     const stationData = stations[station];
     if (stationData.isTimerRunning) {
       return; // Don't allow saving while timer is running
@@ -189,6 +189,16 @@ export default function GasStationForm() {
           notes: "",
         },
       }));
+
+      // Try to sync immediately if online
+      if (isOnline) {
+        try {
+          await syncEntries();
+        } catch (error) {
+          console.error("Failed to sync after save:", error);
+          // Entry is already saved locally, so we can safely ignore sync failure
+        }
+      }
     }
   };
 
