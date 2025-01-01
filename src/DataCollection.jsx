@@ -1,269 +1,56 @@
 // GasStationForm.jsx
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, memo, useCallback, useRef } from "react";
 import { Download, Upload, Wifi, WifiOff } from "lucide-react";
 import { supabase } from "./lib/supabase";
 
-export default function GasStationForm() {
-  // Main state for both stations
-  const [stations, setStations] = useState({
-    driverSide: {
-      isTimerRunning: false,
-      startTime: null,
-      elapsedTime: 0,
-      fuelDoorPosition: "",
-      pumpSide: "driver",
-      notes: "",
-    },
-    passengerSide: {
-      isTimerRunning: false,
-      startTime: null,
-      elapsedTime: 0,
-      fuelDoorPosition: "",
-      pumpSide: "passenger",
-      notes: "",
-    },
-  });
+// Separate Timer component to handle its own updates
+const Timer = memo(({ isRunning, startTime, initialTime, onTimeUpdate }) => {
+  const [elapsedTime, setElapsedTime] = useState(initialTime);
+  const previousRunningState = useRef(isRunning);
 
-  // Storage and sync state
-  const [entries, setEntries] = useState([]);
-  const [isOnline, setIsOnline] = useState(navigator.onLine);
-  const [unsyncedCount, setUnsyncedCount] = useState(0);
-  const [location, setLocation] = useState({
-    latitude: null,
-    longitude: null,
-    error: null,
-  });
-
-  // Add sync function
-  const syncEntries = async () => {
-    try {
-      const unsyncedEntries = JSON.parse(localStorage.getItem("unsyncedEntries") || "[]");
-
-      if (unsyncedEntries.length === 0) return;
-
-      // Format entries for Supabase
-      const formattedEntries = unsyncedEntries.map((entry) => ({
-        timestamp: entry.timestamp,
-        duration: entry.duration,
-        fuel_door_position: entry.fuelDoorPosition,
-        pump_side: entry.pumpSide,
-        notes: entry.notes,
-        is_match: entry.isMatch,
-        // Format location as PostGIS point if available
-        ...(entry.location && {
-          location: `POINT(${entry.location.longitude} ${entry.location.latitude})`,
-        }),
-      }));
-
-      // Insert entries into Supabase
-      const { data, error } = await supabase.from("gas_station_entries").insert(formattedEntries);
-
-      if (error) throw error;
-
-      // Update synced status in local storage
-      const allEntries = JSON.parse(localStorage.getItem("gasStationEntries") || "[]");
-      const updatedEntries = allEntries.map((entry) => ({
-        ...entry,
-        synced: true,
-      }));
-
-      localStorage.setItem("gasStationEntries", JSON.stringify(updatedEntries));
-      localStorage.setItem("unsyncedEntries", "[]");
-
-      // Update state
-      setEntries(updatedEntries);
-      setUnsyncedCount(0);
-    } catch (error) {
-      console.error("Sync error:", error);
-    }
-  };
-
-  // Add useEffect for GPS tracking
   useEffect(() => {
-    if (!navigator.geolocation) {
-      setLocation((prev) => ({ ...prev, error: "Geolocation is not supported" }));
-      return;
+    let intervalId;
+
+    if (!isRunning) {
+      setElapsedTime(initialTime);
+      // Only call onTimeUpdate when transitioning from running to stopped
+      if (previousRunningState.current && onTimeUpdate) {
+        onTimeUpdate(elapsedTime);
+      }
+    } else {
+      intervalId = setInterval(() => {
+        setElapsedTime(Math.floor((Date.now() - startTime) / 1000));
+      }, 1000);
     }
 
-    const success = (position) => {
-      setLocation({
-        latitude: position.coords.latitude,
-        longitude: position.coords.longitude,
-        error: null,
-      });
-    };
-
-    const error = (error) => {
-      setLocation((prev) => ({ ...prev, error: error.message }));
-    };
-
-    // Get initial position
-    navigator.geolocation.getCurrentPosition(success, error);
-
-    // Watch position
-    const watchId = navigator.geolocation.watchPosition(success, error);
-
-    // Cleanup
-    return () => navigator.geolocation.clearWatch(watchId);
-  }, []);
-
-  // Auto-sync when online
-  useEffect(() => {
-    if (isOnline && unsyncedCount > 0) {
-      syncEntries();
-    }
-  }, [isOnline]);
-
-  // Load saved entries and set up online status listeners
-  useEffect(() => {
-    // Load saved entries from localStorage
-    const savedEntries = localStorage.getItem("gasStationEntries");
-    if (savedEntries) {
-      setEntries(JSON.parse(savedEntries));
-    }
-
-    // Load unsynced entries count
-    const unsynced = localStorage.getItem("unsyncedEntries");
-    if (unsynced) {
-      setUnsyncedCount(JSON.parse(unsynced).length);
-    }
-
-    // Set up online status listeners
-    const handleOnline = () => setIsOnline(true);
-    const handleOffline = () => setIsOnline(false);
-    window.addEventListener("online", handleOnline);
-    window.addEventListener("offline", handleOffline);
+    previousRunningState.current = isRunning;
 
     return () => {
-      window.removeEventListener("online", handleOnline);
-      window.removeEventListener("offline", handleOffline);
+      if (intervalId) {
+        clearInterval(intervalId);
+      }
     };
-  }, []);
+  }, [isRunning, startTime, initialTime, elapsedTime, onTimeUpdate]);
 
-  // Running timer effect
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setStations((prev) => {
-        const newState = { ...prev };
-        Object.keys(prev).forEach((station) => {
-          if (prev[station].isTimerRunning) {
-            newState[station].elapsedTime = Math.floor(
-              (Date.now() - prev[station].startTime) / 1000
-            );
-          }
-        });
-        return newState;
-      });
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, []);
-
-  // Timer control functions
-  const startTimer = (station) => {
-    setStations((prev) => ({
-      ...prev,
-      [station]: {
-        ...prev[station],
-        isTimerRunning: true,
-        startTime: Date.now(),
-        elapsedTime: 0,
-      },
-    }));
-  };
-
-  const stopTimer = (station) => {
-    setStations((prev) => {
-      if (prev[station].isTimerRunning) {
-        const duration = Math.floor((Date.now() - prev[station].startTime) / 1000);
-        return {
-          ...prev,
-          [station]: {
-            ...prev[station],
-            isTimerRunning: false,
-            elapsedTime: duration,
-          },
-        };
-      }
-      return prev;
-    });
-  };
-
-  // Save entry function
-  const saveEntry = async (station) => {
-    const stationData = stations[station];
-    if (stationData.isTimerRunning) {
-      return; // Don't allow saving while timer is running
-    }
-    if (stationData.elapsedTime > 0 && stationData.fuelDoorPosition) {
-      const newEntry = {
-        timestamp: new Date().toISOString(),
-        duration: stationData.elapsedTime,
-        fuelDoorPosition: stationData.fuelDoorPosition,
-        pumpSide: stationData.pumpSide,
-        notes: stationData.notes,
-        isMatch: stationData.fuelDoorPosition === stationData.pumpSide,
-        location: location.error
-          ? null
-          : {
-              latitude: location.latitude,
-              longitude: location.longitude,
-            },
-        synced: false,
-      };
-
-      // Update state and localStorage
-      const updatedEntries = [newEntry, ...entries];
-      setEntries(updatedEntries);
-      localStorage.setItem("gasStationEntries", JSON.stringify(updatedEntries));
-
-      // Track unsynced entries
-      const unsyncedEntries = JSON.parse(localStorage.getItem("unsyncedEntries") || "[]");
-      unsyncedEntries.push(newEntry);
-      localStorage.setItem("unsyncedEntries", JSON.stringify(unsyncedEntries));
-      setUnsyncedCount(unsyncedEntries.length);
-
-      // Reset station state
-      setStations((prev) => ({
-        ...prev,
-        [station]: {
-          ...prev[station],
-          elapsedTime: 0,
-          fuelDoorPosition: "",
-          notes: "",
-        },
-      }));
-
-      // Try to sync immediately if online
-      if (isOnline) {
-        try {
-          await syncEntries();
-        } catch (error) {
-          console.error("Failed to sync after save:", error);
-          // Entry is already saved locally, so we can safely ignore sync failure
-        }
-      }
-    }
-  };
-
-  // Export data function
-  const exportData = () => {
-    const dataStr = JSON.stringify(entries, null, 2);
-    const dataBlob = new Blob([dataStr], { type: "application/json" });
-    const url = URL.createObjectURL(dataBlob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `gas-station-data-${new Date().toISOString().split("T")[0]}.json`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-  };
-
-  // Station Timer Component
-  const StationTimer = ({ station }) => {
-    const isMatch = stations[station].fuelDoorPosition === stations[station].pumpSide;
-    const showError = stations[station].elapsedTime > 0 && !stations[station].fuelDoorPosition;
+  return (
+    <div className="text-center py-2 bg-gray-50 rounded">
+      <div className="text-3xl font-mono font-bold">{elapsedTime}s</div>
+      <div className="text-sm text-gray-500">{isRunning ? "Recording time..." : "Timer Ready"}</div>
+    </div>
+  );
+});
+// Memoized Station Timer Component
+const StationTimer = memo(
+  ({
+    station,
+    stationData,
+    onStartTimer,
+    onStopTimer,
+    onFuelDoorChange,
+    onNotesChange,
+    onSaveEntry,
+  }) => {
+    const showError = stationData.elapsedTime > 0 && !stationData.fuelDoorPosition;
 
     return (
       <div className="bg-white shadow rounded-lg p-4 space-y-4">
@@ -275,20 +62,20 @@ export default function GasStationForm() {
         </div>
 
         {/* Timer Display */}
-        <div className="text-center py-2 bg-gray-50 rounded">
-          <div className="text-3xl font-mono font-bold">{stations[station].elapsedTime}s</div>
-          <div className="text-sm text-gray-500">
-            {stations[station].isTimerRunning ? "Recording time..." : "Timer Ready"}
-          </div>
-        </div>
+        <Timer
+          isRunning={stationData.isTimerRunning}
+          startTime={stationData.startTime}
+          initialTime={stationData.elapsedTime}
+          onTimeUpdate={(time) => onStopTimer(station, time)}
+        />
 
         {/* Timer Controls */}
         <div className="grid grid-cols-2 gap-2">
           <button
-            onClick={() => startTimer(station)}
-            disabled={stations[station].isTimerRunning}
+            onClick={() => onStartTimer(station)}
+            disabled={stationData.isTimerRunning}
             className={`p-2 rounded ${
-              stations[station].isTimerRunning
+              stationData.isTimerRunning
                 ? "bg-gray-300 cursor-not-allowed"
                 : "bg-green-500 hover:bg-green-600 text-white"
             }`}
@@ -297,10 +84,10 @@ export default function GasStationForm() {
           </button>
 
           <button
-            onClick={() => stopTimer(station)}
-            disabled={!stations[station].isTimerRunning}
+            onClick={() => onStopTimer(station)}
+            disabled={!stationData.isTimerRunning}
             className={`p-2 rounded ${
-              !stations[station].isTimerRunning
+              !stationData.isTimerRunning
                 ? "bg-gray-300 cursor-not-allowed"
                 : "bg-red-500 hover:bg-red-600 text-white"
             }`}
@@ -314,39 +101,28 @@ export default function GasStationForm() {
           <label className="block text-sm font-medium mb-1">Fuel Door Position</label>
           <div className="grid grid-cols-2 gap-2">
             <button
-              onClick={() =>
-                setStations((prev) => ({
-                  ...prev,
-                  [station]: { ...prev[station], fuelDoorPosition: "driver" },
-                }))
-              }
+              onClick={() => onFuelDoorChange(station, "driver")}
               className={`p-2 rounded ${
-                stations[station].fuelDoorPosition === "driver"
+                stationData.fuelDoorPosition === "driver"
                   ? "bg-blue-500 text-white"
                   : "bg-gray-100 hover:bg-gray-200"
               }`}
             >
-              Driver's Side {stations[station].pumpSide === "driver" && "(Matching)"}
+              Driver's Side {stationData.pumpSide === "driver" && "(Matching)"}
             </button>
             <button
-              onClick={() =>
-                setStations((prev) => ({
-                  ...prev,
-                  [station]: { ...prev[station], fuelDoorPosition: "passenger" },
-                }))
-              }
+              onClick={() => onFuelDoorChange(station, "passenger")}
               className={`p-2 rounded ${
-                stations[station].fuelDoorPosition === "passenger"
+                stationData.fuelDoorPosition === "passenger"
                   ? "bg-blue-500 text-white"
                   : "bg-gray-100 hover:bg-gray-200"
               }`}
             >
-              Passenger's Side {stations[station].pumpSide === "passenger" && "(Matching)"}
+              Passenger's Side {stationData.pumpSide === "passenger" && "(Matching)"}
             </button>
           </div>
         </div>
 
-        {/* Error Message */}
         {showError && (
           <div className="text-sm text-amber-600 bg-amber-50 p-2 rounded">
             Please select the fuel door position and stop timer
@@ -358,13 +134,8 @@ export default function GasStationForm() {
           <label className="block text-sm font-medium mb-1">Notes</label>
           <input
             type="text"
-            value={stations[station].notes}
-            onChange={(e) =>
-              setStations((prev) => ({
-                ...prev,
-                [station]: { ...prev[station], notes: e.target.value },
-              }))
-            }
+            value={stationData.notes}
+            onChange={(e) => onNotesChange(station, e.target.value)}
             placeholder="Any unusual circumstances..."
             className="w-full p-2 border rounded"
           />
@@ -372,10 +143,10 @@ export default function GasStationForm() {
 
         {/* Save Button */}
         <button
-          onClick={() => saveEntry(station)}
-          disabled={!stations[station].elapsedTime || !stations[station].fuelDoorPosition}
+          onClick={() => onSaveEntry(station)}
+          disabled={!stationData.elapsedTime || !stationData.fuelDoorPosition}
           className={`w-full p-2 rounded ${
-            !stations[station].elapsedTime || !stations[station].fuelDoorPosition
+            !stationData.elapsedTime || !stationData.fuelDoorPosition
               ? "bg-gray-300 cursor-not-allowed"
               : "bg-blue-500 hover:bg-blue-600 text-white"
           }`}
@@ -384,81 +155,10 @@ export default function GasStationForm() {
         </button>
       </div>
     );
-  };
+  }
+);
 
-  return (
-    <div className="max-w-2xl mx-auto p-4 space-y-4">
-      {/* Quick Reference Guide */}
-      <QuickReference />
-      {/* Status Bar */}
-      {/* Add this to your Status Bar */}
-      <div className="flex justify-between items-center">
-        <div className="flex items-center space-x-4">
-          {/* Existing online status */}
-          <div className="flex items-center space-x-2">
-            {isOnline ? <Wifi className="text-green-500" /> : <WifiOff className="text-red-500" />}
-            <span className="text-sm">{unsyncedCount} unsynced entries</span>
-          </div>
-
-          {/* Location status */}
-          <div className="flex items-center space-x-2">
-            {location.error ? (
-              <div className="flex items-center text-red-500">
-                <span className="text-sm">📍 Location unavailable</span>
-              </div>
-            ) : location.latitude ? (
-              <div className="flex items-center text-green-500">
-                <span className="text-sm">📍 Location active</span>
-              </div>
-            ) : (
-              <div className="flex items-center text-yellow-500">
-                <span className="text-sm">📍 Getting location...</span>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Export button */}
-        <button
-          onClick={exportData}
-          className="flex items-center space-x-1 bg-gray-100 hover:bg-gray-200 px-3 py-1 rounded"
-        >
-          <Download className="w-4 h-4" />
-          <span>Export Data</span>
-        </button>
-      </div>
-
-      {/* Station Timers */}
-      <div className="grid md:grid-cols-2 gap-4">
-        <StationTimer station="passengerSide" />
-        <StationTimer station="driverSide" />
-      </div>
-
-      {/* Recent Entries */}
-      <div className="bg-white shadow rounded-lg p-4">
-        <h2 className="text-lg font-medium mb-2">Recent Entries</h2>
-        <div className="space-y-2">
-          {entries.slice(0, 5).map((entry, index) => (
-            <div key={index} className="text-sm border-b pb-2">
-              <div className="flex justify-between">
-                <span>{entry.duration}s</span>
-                <span className={entry.isMatch ? "text-green-500" : "text-red-500"}>
-                  {entry.fuelDoorPosition === "driver" ? "Driver" : "Passenger"} -
-                  {entry.pumpSide === "driver" ? "Driver" : "Passenger"}
-                  {entry.isMatch && " (Matching)"}
-                </span>
-                {!entry.synced && <Upload className="w-4 h-4 text-yellow-500" />}
-              </div>
-              {entry.notes && <div className="text-gray-500 text-xs">{entry.notes}</div>}
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-const QuickReference = () => {
+const QuickReference = memo(() => {
   const [isExpanded, setIsExpanded] = useState(false);
 
   return (
@@ -518,4 +218,373 @@ const QuickReference = () => {
       )}
     </div>
   );
-};
+});
+
+export default function GasStationForm() {
+  // Main state
+  const [stations, setStations] = useState({
+    driverSide: {
+      isTimerRunning: false,
+      startTime: null,
+      elapsedTime: 0,
+      fuelDoorPosition: "",
+      pumpSide: "driver",
+      notes: "",
+    },
+    passengerSide: {
+      isTimerRunning: false,
+      startTime: null,
+      elapsedTime: 0,
+      fuelDoorPosition: "",
+      pumpSide: "passenger",
+      notes: "",
+    },
+    driverSide2: {
+      isTimerRunning: false,
+      startTime: null,
+      elapsedTime: 0,
+      fuelDoorPosition: "",
+      pumpSide: "driver",
+      notes: "",
+    },
+    passengerSide2: {
+      isTimerRunning: false,
+      startTime: null,
+      elapsedTime: 0,
+      fuelDoorPosition: "",
+      pumpSide: "passenger",
+      notes: "",
+    },
+  });
+
+  const [entries, setEntries] = useState([]);
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [unsyncedCount, setUnsyncedCount] = useState(0);
+  const [location, setLocation] = useState({
+    latitude: null,
+    longitude: null,
+    error: null,
+  });
+
+  // Handler functions
+  const handleStartTimer = (station) => {
+    setStations((prev) => ({
+      ...prev,
+      [station]: {
+        ...prev[station],
+        isTimerRunning: true,
+        startTime: Date.now(),
+        elapsedTime: 0,
+      },
+    }));
+  };
+
+  const handleStopTimer = (station, finalTime) => {
+    setStations((prev) => ({
+      ...prev,
+      [station]: {
+        ...prev[station],
+        isTimerRunning: false,
+        elapsedTime: finalTime,
+      },
+    }));
+  };
+
+  const handleFuelDoorChange = (station, position) => {
+    setStations((prev) => ({
+      ...prev,
+      [station]: { ...prev[station], fuelDoorPosition: position },
+    }));
+  };
+
+  const handleNotesChange = (station, notes) => {
+    setStations((prev) => ({
+      ...prev,
+      [station]: { ...prev[station], notes },
+    }));
+  };
+
+  // Memoize syncEntries function to prevent recreation on every render
+  const syncEntries = useCallback(async () => {
+    try {
+      const unsyncedEntries = JSON.parse(localStorage.getItem("unsyncedEntries") || "[]");
+
+      if (unsyncedEntries.length === 0) return;
+
+      const formattedEntries = unsyncedEntries.map((entry) => ({
+        timestamp: entry.timestamp,
+        duration: entry.duration,
+        fuel_door_position: entry.fuelDoorPosition,
+        pump_side: entry.pumpSide,
+        notes: entry.notes,
+        is_match: entry.isMatch,
+        ...(entry.location && {
+          location: `POINT(${entry.location.longitude} ${entry.location.latitude})`,
+        }),
+      }));
+
+      const { error } = await supabase.from("gas_station_entries").insert(formattedEntries);
+
+      if (error) throw error;
+
+      const allEntries = JSON.parse(localStorage.getItem("gasStationEntries") || "[]");
+      const updatedEntries = allEntries.map((entry) => ({
+        ...entry,
+        synced: true,
+      }));
+
+      localStorage.setItem("gasStationEntries", JSON.stringify(updatedEntries));
+      localStorage.setItem("unsyncedEntries", "[]");
+
+      setEntries(updatedEntries);
+      setUnsyncedCount(0);
+    } catch (error) {
+      console.error("Sync error:", error);
+    }
+  }, []);
+
+  // Save entry function
+  const saveEntry = async (station) => {
+    const stationData = stations[station];
+    if (stationData.isTimerRunning) {
+      return;
+    }
+    if (stationData.elapsedTime > 0 && stationData.fuelDoorPosition) {
+      const newEntry = {
+        timestamp: new Date().toISOString(),
+        duration: stationData.elapsedTime,
+        fuelDoorPosition: stationData.fuelDoorPosition,
+        pumpSide: stationData.pumpSide,
+        notes: stationData.notes,
+        isMatch: stationData.fuelDoorPosition === stationData.pumpSide,
+        location: location.error
+          ? null
+          : {
+              latitude: location.latitude,
+              longitude: location.longitude,
+            },
+        synced: false,
+      };
+
+      const updatedEntries = [newEntry, ...entries];
+      setEntries(updatedEntries);
+      localStorage.setItem("gasStationEntries", JSON.stringify(updatedEntries));
+
+      const unsyncedEntries = JSON.parse(localStorage.getItem("unsyncedEntries") || "[]");
+      unsyncedEntries.push(newEntry);
+      localStorage.setItem("unsyncedEntries", JSON.stringify(unsyncedEntries));
+      setUnsyncedCount(unsyncedEntries.length);
+
+      setStations((prev) => ({
+        ...prev,
+        [station]: {
+          ...prev[station],
+          elapsedTime: 0,
+          fuelDoorPosition: "",
+          notes: "",
+        },
+      }));
+
+      if (isOnline) {
+        try {
+          await syncEntries();
+        } catch (error) {
+          console.error("Failed to sync after save:", error);
+        }
+      }
+    }
+  };
+
+  // Export data function
+  const exportData = () => {
+    const dataStr = JSON.stringify(entries, null, 2);
+    const dataBlob = new Blob([dataStr], { type: "application/json" });
+    const url = URL.createObjectURL(dataBlob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `gas-station-data-${new Date().toISOString().split("T")[0]}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  // Effects for geolocation
+  useEffect(() => {
+    if (!navigator.geolocation) {
+      setLocation((prev) => ({ ...prev, error: "Geolocation is not supported" }));
+      return;
+    }
+
+    const success = (position) => {
+      setLocation({
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude,
+        error: null,
+      });
+    };
+
+    const error = (error) => {
+      setLocation((prev) => ({ ...prev, error: error.message }));
+    };
+
+    navigator.geolocation.getCurrentPosition(success, error);
+    const watchId = navigator.geolocation.watchPosition(success, error);
+
+    return () => navigator.geolocation.clearWatch(watchId);
+  }, []);
+
+  // Effect for auto-sync
+  useEffect(() => {
+    let isMounted = true;
+
+    const handleSync = async () => {
+      if (isOnline && unsyncedCount > 0) {
+        await syncEntries();
+      }
+    };
+
+    if (isMounted) {
+      handleSync();
+    }
+
+    return () => {
+      isMounted = false;
+    };
+  }, [isOnline, unsyncedCount, syncEntries]); // Add syncEntries to dependencies
+
+  // Effect for loading saved entries and online status
+  useEffect(() => {
+    // Load saved entries from localStorage only once on mount
+    const loadSavedData = () => {
+      const savedEntries = localStorage.getItem("gasStationEntries");
+      if (savedEntries) {
+        setEntries(JSON.parse(savedEntries));
+      }
+
+      const unsynced = localStorage.getItem("unsyncedEntries");
+      if (unsynced) {
+        setUnsyncedCount(JSON.parse(unsynced).length);
+      }
+    };
+
+    loadSavedData();
+
+    // Set up online status listeners
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, []);
+
+  return (
+    <div className="max-w-2xl mx-auto p-4 space-y-4">
+      {/* Quick Reference Guide */}
+      <QuickReference />
+
+      {/* Status Bar */}
+      <div className="flex justify-between items-center">
+        <div className="flex items-center space-x-4">
+          {/* Online status */}
+          <div className="flex items-center space-x-2">
+            {isOnline ? <Wifi className="text-green-500" /> : <WifiOff className="text-red-500" />}
+            <span className="text-sm">{unsyncedCount} unsynced entries</span>
+          </div>
+
+          {/* Location status */}
+          <div className="flex items-center space-x-2">
+            {location.error ? (
+              <div className="flex items-center text-red-500">
+                <span className="text-sm">📍 Location unavailable</span>
+              </div>
+            ) : location.latitude ? (
+              <div className="flex items-center text-green-500">
+                <span className="text-sm">📍 Location active</span>
+              </div>
+            ) : (
+              <div className="flex items-center text-yellow-500">
+                <span className="text-sm">📍 Getting location...</span>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Export button */}
+        <button
+          onClick={exportData}
+          className="flex items-center space-x-1 bg-gray-100 hover:bg-gray-200 px-3 py-1 rounded"
+        >
+          <Download className="w-4 h-4" />
+          <span>Export Data</span>
+        </button>
+      </div>
+
+      {/* Station Timers */}
+      <div className="grid md:grid-cols-2 gap-4">
+        <StationTimer
+          station="passengerSide"
+          stationData={stations.passengerSide}
+          onStartTimer={handleStartTimer}
+          onStopTimer={handleStopTimer}
+          onFuelDoorChange={handleFuelDoorChange}
+          onNotesChange={handleNotesChange}
+          onSaveEntry={saveEntry}
+        />
+        <StationTimer
+          station="driverSide"
+          stationData={stations.driverSide}
+          onStartTimer={handleStartTimer}
+          onStopTimer={handleStopTimer}
+          onFuelDoorChange={handleFuelDoorChange}
+          onNotesChange={handleNotesChange}
+          onSaveEntry={saveEntry}
+        />
+        <StationTimer
+          station="passengerSide"
+          stationData={stations.passengerSide2}
+          onStartTimer={handleStartTimer}
+          onStopTimer={handleStopTimer}
+          onFuelDoorChange={handleFuelDoorChange}
+          onNotesChange={handleNotesChange}
+          onSaveEntry={saveEntry}
+        />
+        <StationTimer
+          station="driverSide"
+          stationData={stations.driverSide2}
+          onStartTimer={handleStartTimer}
+          onStopTimer={handleStopTimer}
+          onFuelDoorChange={handleFuelDoorChange}
+          onNotesChange={handleNotesChange}
+          onSaveEntry={saveEntry}
+        />
+      </div>
+
+      {/* Recent Entries */}
+      <div className="bg-white shadow rounded-lg p-4">
+        <h2 className="text-lg font-medium mb-2">Recent Entries</h2>
+        <div className="space-y-2">
+          {entries.slice(0, 5).map((entry, index) => (
+            <div key={index} className="text-sm border-b pb-2">
+              <div className="flex justify-between">
+                <span>{entry.duration}s</span>
+                <span className={entry.isMatch ? "text-green-500" : "text-red-500"}>
+                  {entry.fuelDoorPosition === "driver" ? "Driver" : "Passenger"} -
+                  {entry.pumpSide === "driver" ? "Driver" : "Passenger"}
+                  {entry.isMatch && " (Matching)"}
+                </span>
+                {!entry.synced && <Upload className="w-4 h-4 text-yellow-500" />}
+              </div>
+              {entry.notes && <div className="text-gray-500 text-xs">{entry.notes}</div>}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
