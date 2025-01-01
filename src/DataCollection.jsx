@@ -1,6 +1,6 @@
 // GasStationForm.jsx
 import React, { useState, useEffect, memo, useCallback, useRef } from "react";
-import { Download, Upload, Wifi, WifiOff } from "lucide-react";
+import { Download, Trash2, Plus, Upload, Wifi, WifiOff } from "lucide-react";
 import { supabase } from "./lib/supabase";
 
 // Separate Timer component to handle its own updates
@@ -42,13 +42,14 @@ const Timer = memo(({ isRunning, startTime, initialTime, onTimeUpdate }) => {
 // Memoized Station Timer Component
 const StationTimer = memo(
   ({
-    station,
+    pumpId,
     stationData,
     onStartTimer,
     onStopTimer,
     onFuelDoorChange,
     onNotesChange,
     onSaveEntry,
+    onDeletePump,
   }) => {
     const showError = stationData.elapsedTime > 0 && !stationData.fuelDoorPosition;
 
@@ -56,23 +57,28 @@ const StationTimer = memo(
       <div className="bg-white shadow rounded-lg p-4 space-y-4">
         {/* Station Header */}
         <div className="flex items-center justify-between border-b pb-2">
-          <h2 className="font-medium">
-            {station === "driverSide" ? "🚘⛽️ Driver's Side" : "⛽️🚘 Passenger's Side"}
-          </h2>
+          <h2 className="font-medium">Pump #{pumpId}</h2>
+          <button
+            onClick={() => onDeletePump(pumpId)}
+            className="text-red-500 hover:text-red-700"
+            title="Delete pump"
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
         </div>
 
-        {/* Timer Display */}
+        {/* Rest of the StationTimer component remains the same */}
         <Timer
           isRunning={stationData.isTimerRunning}
           startTime={stationData.startTime}
           initialTime={stationData.elapsedTime}
-          onTimeUpdate={(time) => onStopTimer(station, time)}
+          onTimeUpdate={(time) => onStopTimer(pumpId, time)}
         />
 
         {/* Timer Controls */}
         <div className="grid grid-cols-2 gap-2">
           <button
-            onClick={() => onStartTimer(station)}
+            onClick={() => onStartTimer(pumpId)}
             disabled={stationData.isTimerRunning}
             className={`p-2 rounded ${
               stationData.isTimerRunning
@@ -84,7 +90,7 @@ const StationTimer = memo(
           </button>
 
           <button
-            onClick={() => onStopTimer(station)}
+            onClick={() => onStopTimer(pumpId)}
             disabled={!stationData.isTimerRunning}
             className={`p-2 rounded ${
               !stationData.isTimerRunning
@@ -101,33 +107,27 @@ const StationTimer = memo(
           <label className="block text-sm font-medium mb-1">Fuel Door Position</label>
           <div className="grid grid-cols-2 gap-2">
             <button
-              onClick={() => onFuelDoorChange(station, "driver")}
+              onClick={() => onFuelDoorChange(pumpId, "driver")}
               className={`p-2 rounded ${
                 stationData.fuelDoorPosition === "driver"
                   ? "bg-blue-500 text-white"
                   : "bg-gray-100 hover:bg-gray-200"
               }`}
             >
-              Driver's Side {stationData.pumpSide === "driver" && "(Matching)"}
+              Driver's Side
             </button>
             <button
-              onClick={() => onFuelDoorChange(station, "passenger")}
+              onClick={() => onFuelDoorChange(pumpId, "passenger")}
               className={`p-2 rounded ${
                 stationData.fuelDoorPosition === "passenger"
                   ? "bg-blue-500 text-white"
                   : "bg-gray-100 hover:bg-gray-200"
               }`}
             >
-              Passenger's Side {stationData.pumpSide === "passenger" && "(Matching)"}
+              Passenger's Side
             </button>
           </div>
         </div>
-
-        {showError && (
-          <div className="text-sm text-amber-600 bg-amber-50 p-2 rounded">
-            Please select the fuel door position and stop timer
-          </div>
-        )}
 
         {/* Notes Input */}
         <div>
@@ -135,15 +135,14 @@ const StationTimer = memo(
           <input
             type="text"
             value={stationData.notes}
-            onChange={(e) => onNotesChange(station, e.target.value)}
+            onChange={(e) => onNotesChange(pumpId, e.target.value)}
             placeholder="Any unusual circumstances..."
             className="w-full p-2 border rounded"
           />
         </div>
 
-        {/* Save Button */}
         <button
-          onClick={() => onSaveEntry(station)}
+          onClick={() => onSaveEntry(pumpId)}
           disabled={!stationData.elapsedTime || !stationData.fuelDoorPosition}
           className={`w-full p-2 rounded ${
             !stationData.elapsedTime || !stationData.fuelDoorPosition
@@ -222,41 +221,19 @@ const QuickReference = memo(() => {
 
 export default function GasStationForm() {
   // Main state
+  // Modified state to include pumpSide for each station
   const [stations, setStations] = useState({
-    driverSide: {
+    1: {
       isTimerRunning: false,
       startTime: null,
       elapsedTime: 0,
       fuelDoorPosition: "",
-      pumpSide: "driver",
-      notes: "",
-    },
-    passengerSide: {
-      isTimerRunning: false,
-      startTime: null,
-      elapsedTime: 0,
-      fuelDoorPosition: "",
-      pumpSide: "passenger",
-      notes: "",
-    },
-    driverSide2: {
-      isTimerRunning: false,
-      startTime: null,
-      elapsedTime: 0,
-      fuelDoorPosition: "",
-      pumpSide: "driver",
-      notes: "",
-    },
-    passengerSide2: {
-      isTimerRunning: false,
-      startTime: null,
-      elapsedTime: 0,
-      fuelDoorPosition: "",
-      pumpSide: "passenger",
+      pumpSide: "driver", // Which side the pump is on
       notes: "",
     },
   });
 
+  const [nextPumpId, setNextPumpId] = useState(2);
   const [entries, setEntries] = useState([]);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [unsyncedCount, setUnsyncedCount] = useState(0);
@@ -266,12 +243,37 @@ export default function GasStationForm() {
     error: null,
   });
 
-  // Handler functions
-  const handleStartTimer = (station) => {
+  // Modified add pump to include pump side selection
+  const addPump = (side) => {
     setStations((prev) => ({
       ...prev,
-      [station]: {
-        ...prev[station],
+      [nextPumpId]: {
+        isTimerRunning: false,
+        startTime: null,
+        elapsedTime: 0,
+        fuelDoorPosition: "",
+        pumpSide: side, // "driver" or "passenger"
+        notes: "",
+      },
+    }));
+    setNextPumpId((prev) => prev + 1);
+  };
+
+  // Delete pump
+  const deletePump = (pumpId) => {
+    setStations((prev) => {
+      const newStations = { ...prev };
+      delete newStations[pumpId];
+      return newStations;
+    });
+  };
+
+  // Modified handler functions to work with pump IDs
+  const handleStartTimer = (pumpId) => {
+    setStations((prev) => ({
+      ...prev,
+      [pumpId]: {
+        ...prev[pumpId],
         isTimerRunning: true,
         startTime: Date.now(),
         elapsedTime: 0,
@@ -279,11 +281,11 @@ export default function GasStationForm() {
     }));
   };
 
-  const handleStopTimer = (station, finalTime) => {
+  const handleStopTimer = (pumpId, finalTime) => {
     setStations((prev) => ({
       ...prev,
-      [station]: {
-        ...prev[station],
+      [pumpId]: {
+        ...prev[pumpId],
         isTimerRunning: false,
         elapsedTime: finalTime,
       },
@@ -484,10 +486,7 @@ export default function GasStationForm() {
   }, []);
 
   return (
-    <div className="max-w-2xl mx-auto p-4 space-y-4">
-      {/* Quick Reference Guide */}
-      <QuickReference />
-
+    <div className="max-w-6xl mx-auto p-4 space-y-4">
       {/* Status Bar */}
       <div className="flex justify-between items-center">
         <div className="flex items-center space-x-4">
@@ -496,86 +495,64 @@ export default function GasStationForm() {
             {isOnline ? <Wifi className="text-green-500" /> : <WifiOff className="text-red-500" />}
             <span className="text-sm">{unsyncedCount} unsynced entries</span>
           </div>
-
-          {/* Location status */}
-          <div className="flex items-center space-x-2">
-            {location.error ? (
-              <div className="flex items-center text-red-500">
-                <span className="text-sm">📍 Location unavailable</span>
-              </div>
-            ) : location.latitude ? (
-              <div className="flex items-center text-green-500">
-                <span className="text-sm">📍 Location active</span>
-              </div>
-            ) : (
-              <div className="flex items-center text-yellow-500">
-                <span className="text-sm">📍 Getting location...</span>
-              </div>
-            )}
-          </div>
         </div>
 
-        {/* Export button */}
-        <button
-          onClick={exportData}
-          className="flex items-center space-x-1 bg-gray-100 hover:bg-gray-200 px-3 py-1 rounded"
-        >
-          <Download className="w-4 h-4" />
-          <span>Export Data</span>
-        </button>
+        {/* Add Pump Buttons */}
+        <div className="flex gap-2">
+          <button
+            onClick={() => addPump("driver")}
+            className="flex items-center space-x-2 bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Add Driver Side Pump</span>
+          </button>
+          <button
+            onClick={() => addPump("passenger")}
+            className="flex items-center space-x-2 bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Add Passenger Side Pump</span>
+          </button>
+        </div>
       </div>
 
-      {/* Station Timers */}
-      <div className="grid md:grid-cols-2 gap-4">
-        <StationTimer
-          station="passengerSide"
-          stationData={stations.passengerSide}
-          onStartTimer={handleStartTimer}
-          onStopTimer={handleStopTimer}
-          onFuelDoorChange={handleFuelDoorChange}
-          onNotesChange={handleNotesChange}
-          onSaveEntry={saveEntry}
-        />
-        <StationTimer
-          station="driverSide"
-          stationData={stations.driverSide}
-          onStartTimer={handleStartTimer}
-          onStopTimer={handleStopTimer}
-          onFuelDoorChange={handleFuelDoorChange}
-          onNotesChange={handleNotesChange}
-          onSaveEntry={saveEntry}
-        />
-        <StationTimer
-          station="passengerSide"
-          stationData={stations.passengerSide2}
-          onStartTimer={handleStartTimer}
-          onStopTimer={handleStopTimer}
-          onFuelDoorChange={handleFuelDoorChange}
-          onNotesChange={handleNotesChange}
-          onSaveEntry={saveEntry}
-        />
-        <StationTimer
-          station="driverSide"
-          stationData={stations.driverSide2}
-          onStartTimer={handleStartTimer}
-          onStopTimer={handleStopTimer}
-          onFuelDoorChange={handleFuelDoorChange}
-          onNotesChange={handleNotesChange}
-          onSaveEntry={saveEntry}
-        />
+      {/* Station Timers Grid */}
+      <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {Object.entries(stations).map(([pumpId, stationData]) => (
+          <div
+            key={pumpId}
+            className={`
+            border-l-4
+            ${stationData.pumpSide === "driver" ? "border-green-500" : "border-blue-500"}
+          `}
+          >
+            <StationTimer
+              pumpId={pumpId}
+              stationData={stationData}
+              onStartTimer={handleStartTimer}
+              onStopTimer={handleStopTimer}
+              onFuelDoorChange={handleFuelDoorChange}
+              onNotesChange={handleNotesChange}
+              onSaveEntry={saveEntry}
+              onDeletePump={deletePump}
+            />
+          </div>
+        ))}
       </div>
 
-      {/* Recent Entries */}
+      {/* Recent Entries with improved display */}
       <div className="bg-white shadow rounded-lg p-4">
         <h2 className="text-lg font-medium mb-2">Recent Entries</h2>
         <div className="space-y-2">
           {entries.slice(0, 5).map((entry, index) => (
             <div key={index} className="text-sm border-b pb-2">
               <div className="flex justify-between">
-                <span>{entry.duration}s</span>
+                <span>
+                  Pump #{entry.pumpId} ({entry.pumpSide === "driver" ? "Driver" : "Passenger"} Side)
+                  - {entry.duration}s
+                </span>
                 <span className={entry.isMatch ? "text-green-500" : "text-red-500"}>
-                  {entry.fuelDoorPosition === "driver" ? "Driver" : "Passenger"} -
-                  {entry.pumpSide === "driver" ? "Driver" : "Passenger"}
+                  {entry.fuelDoorPosition === "driver" ? "Driver" : "Passenger"} Door
                   {entry.isMatch && " (Matching)"}
                 </span>
                 {!entry.synced && <Upload className="w-4 h-4 text-yellow-500" />}
