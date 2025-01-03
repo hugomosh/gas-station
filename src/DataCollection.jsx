@@ -309,10 +309,11 @@ export default function GasStationForm() {
   // Memoize syncEntries function to prevent recreation on every render
   const syncEntries = useCallback(async () => {
     try {
-      const unsyncedEntries = JSON.parse(localStorage.getItem("unsyncedEntries") || "[]");
-
+      // Get only unsynced entries
+      const unsyncedEntries = entries.filter((entry) => !entry.synced);
       if (unsyncedEntries.length === 0) return;
 
+      // Format entries for Supabase
       const formattedEntries = unsyncedEntries.map((entry) => ({
         timestamp: entry.timestamp,
         duration: entry.duration,
@@ -320,39 +321,40 @@ export default function GasStationForm() {
         pump_side: entry.pumpSide,
         notes: entry.notes,
         is_match: entry.isMatch,
+        pump_id: entry.pumpId,
         ...(entry.location && {
           location: `POINT(${entry.location.longitude} ${entry.location.latitude})`,
         }),
       }));
 
+      // Insert entries into Supabase
       const { error } = await supabase.from("gas_station_entries").insert(formattedEntries);
-
       if (error) throw error;
 
-      const allEntries = JSON.parse(localStorage.getItem("gasStationEntries") || "[]");
-      const updatedEntries = allEntries.map((entry) => ({
-        ...entry,
-        synced: true,
-      }));
-
-      localStorage.setItem("gasStationEntries", JSON.stringify(updatedEntries));
-      localStorage.setItem("unsyncedEntries", "[]");
+      // Update local entries to mark them as synced
+      const updatedEntries = entries.map((entry) =>
+        unsyncedEntries.some((unsynced) => unsynced.timestamp === entry.timestamp)
+          ? { ...entry, synced: true }
+          : entry
+      );
 
       setEntries(updatedEntries);
       setUnsyncedCount(0);
+
+      // Update localStorage with synced status
+      localStorage.setItem("gasStationEntries", JSON.stringify(updatedEntries));
     } catch (error) {
       console.error("Sync error:", error);
     }
-  }, []);
+  }, [entries]);
 
-  // Save entry function
-  const saveEntry = async (station) => {
-    const stationData = stations[station];
-    if (stationData.isTimerRunning) {
-      return;
-    }
+  const saveEntry = async (pumpId) => {
+    const stationData = stations[pumpId];
+    if (stationData.isTimerRunning) return;
+
     if (stationData.elapsedTime > 0 && stationData.fuelDoorPosition) {
       const newEntry = {
+        pumpId,
         timestamp: new Date().toISOString(),
         duration: stationData.elapsedTime,
         fuelDoorPosition: stationData.fuelDoorPosition,
@@ -368,25 +370,26 @@ export default function GasStationForm() {
         synced: false,
       };
 
+      // Update state with new entry
       const updatedEntries = [newEntry, ...entries];
       setEntries(updatedEntries);
+      setUnsyncedCount((prev) => prev + 1);
+
+      // Save to localStorage
       localStorage.setItem("gasStationEntries", JSON.stringify(updatedEntries));
 
-      const unsyncedEntries = JSON.parse(localStorage.getItem("unsyncedEntries") || "[]");
-      unsyncedEntries.push(newEntry);
-      localStorage.setItem("unsyncedEntries", JSON.stringify(unsyncedEntries));
-      setUnsyncedCount(unsyncedEntries.length);
-
+      // Reset station state
       setStations((prev) => ({
         ...prev,
-        [station]: {
-          ...prev[station],
+        [pumpId]: {
+          ...prev[pumpId],
           elapsedTime: 0,
           fuelDoorPosition: "",
           notes: "",
         },
       }));
 
+      // Only sync if online
       if (isOnline) {
         try {
           await syncEntries();
@@ -395,20 +398,6 @@ export default function GasStationForm() {
         }
       }
     }
-  };
-
-  // Export data function
-  const exportData = () => {
-    const dataStr = JSON.stringify(entries, null, 2);
-    const dataBlob = new Blob([dataStr], { type: "application/json" });
-    const url = URL.createObjectURL(dataBlob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `gas-station-data-${new Date().toISOString().split("T")[0]}.json`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
   };
 
   // Effects for geolocation
@@ -436,41 +425,16 @@ export default function GasStationForm() {
     return () => navigator.geolocation.clearWatch(watchId);
   }, []);
 
-  // Effect for auto-sync
   useEffect(() => {
-    let isMounted = true;
-
-    const handleSync = async () => {
-      if (isOnline && unsyncedCount > 0) {
-        await syncEntries();
-      }
-    };
-
-    if (isMounted) {
-      handleSync();
+    // Load saved entries
+    const savedEntries = localStorage.getItem("gasStationEntries");
+    if (savedEntries) {
+      const parsedEntries = JSON.parse(savedEntries);
+      setEntries(parsedEntries);
+      // Count unsynced entries
+      const unsyncedCount = parsedEntries.filter((entry) => !entry.synced).length;
+      setUnsyncedCount(unsyncedCount);
     }
-
-    return () => {
-      isMounted = false;
-    };
-  }, [isOnline, unsyncedCount, syncEntries]); // Add syncEntries to dependencies
-
-  // Effect for loading saved entries and online status
-  useEffect(() => {
-    // Load saved entries from localStorage only once on mount
-    const loadSavedData = () => {
-      const savedEntries = localStorage.getItem("gasStationEntries");
-      if (savedEntries) {
-        setEntries(JSON.parse(savedEntries));
-      }
-
-      const unsynced = localStorage.getItem("unsyncedEntries");
-      if (unsynced) {
-        setUnsyncedCount(JSON.parse(unsynced).length);
-      }
-    };
-
-    loadSavedData();
 
     // Set up online status listeners
     const handleOnline = () => setIsOnline(true);
@@ -484,6 +448,23 @@ export default function GasStationForm() {
       window.removeEventListener("offline", handleOffline);
     };
   }, []);
+
+  // Auto-sync effect
+  useEffect(() => {
+    let mounted = true;
+
+    const autoSync = async () => {
+      if (isOnline && unsyncedCount > 0 && mounted) {
+        await syncEntries();
+      }
+    };
+
+    autoSync();
+
+    return () => {
+      mounted = false;
+    };
+  }, [isOnline, unsyncedCount, syncEntries]);
 
   return (
     <div className="max-w-6xl mx-auto p-4 space-y-4">
